@@ -235,7 +235,35 @@ jobs:
         if: env.PROJECT_TYPE == 'expo'
         run: |
           cd project
-          npm install
+          # Resolve pnpm catalog: entries and remove workspace: deps so plain npm works
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            const catalogMap = {
+              '@tanstack/react-query': '^5.90.21',
+              'react': '19.1.0',
+              'react-dom': '19.1.0',
+              'zod': '^3.25.76',
+              '@types/react': '^19.2.0',
+              '@types/react-dom': '^19.2.0',
+              '@types/node': '^25.3.3'
+            };
+            ['dependencies','devDependencies','peerDependencies'].forEach(section => {
+              if (!pkg[section]) return;
+              Object.keys(pkg[section]).forEach(dep => {
+                const v = pkg[section][dep];
+                if (v === 'catalog:' || v.startsWith('catalog:')) {
+                  pkg[section][dep] = catalogMap[dep] || 'latest';
+                }
+                if (v.startsWith('workspace:')) {
+                  delete pkg[section][dep];
+                }
+              });
+            });
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2));
+            console.log('package.json patched for standalone npm install');
+          "
+          npm install --legacy-peer-deps
           npx expo prebuild --platform android --non-interactive
 
       - name: Patch Flutter ProGuard rules for R8
