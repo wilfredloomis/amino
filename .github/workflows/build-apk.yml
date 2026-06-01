@@ -34,7 +34,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
 
     steps:
       - name: Set up job
@@ -294,7 +294,11 @@ jobs:
         run: |
           cd project/android
           chmod +x gradlew
-          ./gradlew assemble${{ inputs.build_mode == 'debug' && 'Debug' || 'Release' }} 2>&1 | tail -150
+          ./gradlew assemble${{ inputs.build_mode == 'debug' && 'Debug' || 'Release' }} \
+            --no-daemon \
+            --stacktrace \
+            -Dorg.gradle.jvmargs="-Xmx4096m -XX:MaxMetaspaceSize=512m" \
+            2>&1 | tail -200
 
       - name: Build React Native APK
         if: env.PROJECT_TYPE == 'react_native'
