@@ -289,6 +289,13 @@ jobs:
           flutter pub get
           flutter build apk --${{ inputs.build_mode }} --no-shrink 2>&1 | tail -50
 
+      - name: Build Expo APK
+        if: env.PROJECT_TYPE == 'expo'
+        run: |
+          cd project/android
+          chmod +x gradlew
+          ./gradlew assemble${{ inputs.build_mode == 'debug' && 'Debug' || 'Release' }} 2>&1 | tail -150
+
       - name: Build React Native APK
         if: env.PROJECT_TYPE == 'react_native'
         run: |
