@@ -1,4 +1,5 @@
 name: Cloud APK Build
+run-name: Build ${{ inputs.job_id }} - ${{ inputs.app_name }}
 
 on:
   workflow_dispatch:
@@ -17,7 +18,7 @@ on:
         required: true
       package_name:
         description: "Android package name (e.g. com.example.myapp)"
-        required: true
+        required: false
       flutter_version:
         description: "Flutter version to use"
         required: false
@@ -44,11 +45,13 @@ jobs:
           echo "=============================="
           echo "Job ID:       ${{ inputs.job_id }}"
           echo "App name:     ${{ inputs.app_name }}"
-          echo "Package:      ${{ inputs.package_name }}"
+          echo "Package:      ${PACKAGE_NAME:-<project default>}"
           echo "Build mode:   ${{ inputs.build_mode }}"
           echo "Project type: ${{ inputs.project_type }}"
           echo "Flutter ver:  ${{ inputs.flutter_version }}"
           echo "=============================="
+        env:
+          PACKAGE_NAME: ${{ inputs.package_name }}
 
       - name: Install system dependencies
         run: |
@@ -109,8 +112,6 @@ jobs:
           cd project
 
           FORCED_TYPE="${{ inputs.project_type }}"
-          # Normalize hyphens to underscores for consistency (native-android → native_android)
-          FORCED_TYPE=$(echo "$FORCED_TYPE" | tr '-' '_')
           if [ "$FORCED_TYPE" != "auto" ] && [ -n "$FORCED_TYPE" ]; then
             echo "PROJECT_TYPE=$FORCED_TYPE" >> $GITHUB_ENV
             echo "Forced project type: $FORCED_TYPE"
@@ -151,7 +152,7 @@ jobs:
         if: env.PROJECT_TYPE == 'react_native' || env.PROJECT_TYPE == 'expo'
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 20
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
@@ -182,31 +183,32 @@ jobs:
           restore-keys: |
             npm-${{ runner.os }}-
 
-      - name: Patch package name and app name
+      - name: Patch app name
+        run: |
+          cd project
+          TARGET_APP="${{ inputs.app_name }}"
+
+          echo "Target app name: $TARGET_APP"
+
+          # Patch app label in AndroidManifest
+          if [ -f android/app/src/main/AndroidManifest.xml ]; then
+            sed -i "s|android:label=\"[^\"]*\"|android:label=\"$TARGET_APP\"|g" android/app/src/main/AndroidManifest.xml
+            echo "Patched app label: $TARGET_APP"
+          fi
+
+      - name: Patch package name
+        if: ${{ inputs.package_name != '' }}
         run: |
           cd project
           TARGET_PACKAGE="${{ inputs.package_name }}"
-          TARGET_APP="${{ inputs.app_name }}"
-
           echo "Target package: $TARGET_PACKAGE"
-          echo "Target app name: $TARGET_APP"
 
-          # Find AndroidManifest.xml (handle both Expo android/ and native app/ layouts)
-          MANIFEST=""
           if [ -f android/app/src/main/AndroidManifest.xml ]; then
-            MANIFEST="android/app/src/main/AndroidManifest.xml"
-          elif [ -f app/src/main/AndroidManifest.xml ]; then
-            MANIFEST="app/src/main/AndroidManifest.xml"
-          fi
-
-          if [ -n "$MANIFEST" ]; then
-            CURRENT=$(grep -oP 'package="\K[^"]+' "$MANIFEST" | head -1 || echo "")
+            CURRENT=$(grep -oP 'package="\K[^"]+' android/app/src/main/AndroidManifest.xml | head -1 || echo "")
             if [ -n "$CURRENT" ] && [ "$CURRENT" != "$TARGET_PACKAGE" ]; then
-              sed -i "s|package=\"$CURRENT\"|package=\"$TARGET_PACKAGE\"|g" "$MANIFEST"
-              echo "Patched package: $CURRENT → $TARGET_PACKAGE"
+              sed -i "s|package=\"$CURRENT\"|package=\"$TARGET_PACKAGE\"|g" android/app/src/main/AndroidManifest.xml
+              echo "Patched package: $CURRENT -> $TARGET_PACKAGE"
             fi
-            sed -i "s|android:label=\"[^\"]*\"|android:label=\"$TARGET_APP\"|g" "$MANIFEST"
-            echo "Patched app label in $MANIFEST"
           fi
 
       - name: Set up signing keystore
@@ -222,36 +224,18 @@ jobs:
       - name: Auto-fix Gradle issues
         run: |
           cd project
-          # Fix Gradle wrapper permissions
+          # Fix common Gradle wrapper issues
           if [ -f android/gradlew ]; then
             chmod +x android/gradlew
           elif [ -f gradlew ]; then
             chmod +x gradlew
           fi
 
-          # Fix compileSdkVersion (Groovy DSL) if too old
-          find . -name "build.gradle" | xargs grep -l "compileSdkVersion" 2>/dev/null | while read f; do
+          # Fix compileSdkVersion if too old
+          find . -name "build.gradle" -o -name "build.gradle.kts" | xargs grep -l "compileSdkVersion" 2>/dev/null | while read f; do
             sed -i 's/compileSdkVersion [0-9]*/compileSdkVersion 35/g' "$f" 2>/dev/null || true
             sed -i 's/targetSdkVersion [0-9]*/targetSdkVersion 35/g' "$f" 2>/dev/null || true
-            echo "Patched Groovy DSL SDK version in $f"
-          done || true
-
-          # Fix compileSdk (Kotlin DSL .kts) if too old — format: compileSdk = NN
-          find . -name "build.gradle.kts" | xargs grep -l "compileSdk" 2>/dev/null | while read f; do
-            sed -i 's/compileSdk = [0-9]*/compileSdk = 35/g' "$f" 2>/dev/null || true
-            sed -i 's/targetSdk = [0-9]*/targetSdk = 35/g' "$f" 2>/dev/null || true
-            echo "Patched Kotlin DSL SDK version in $f"
-          done || true
-
-          # Ensure jvmTarget matches Java 17 in Kotlin DSL
-          find . -name "build.gradle.kts" | xargs grep -l "jvmTarget" 2>/dev/null | while read f; do
-            sed -i 's/jvmTarget = "[0-9.]*"/jvmTarget = "17"/g' "$f" 2>/dev/null || true
-          done || true
-
-          # Ensure sourceCompatibility/targetCompatibility use VERSION_17 in Kotlin DSL
-          find . -name "build.gradle.kts" | xargs grep -l "sourceCompatibility" 2>/dev/null | while read f; do
-            sed -i 's/sourceCompatibility = JavaVersion\.[A-Z_0-9]*/sourceCompatibility = JavaVersion.VERSION_17/g' "$f" 2>/dev/null || true
-            sed -i 's/targetCompatibility = JavaVersion\.[A-Z_0-9]*/targetCompatibility = JavaVersion.VERSION_17/g' "$f" 2>/dev/null || true
+            echo "Patched SDK version in $f"
           done || true
 
       - name: Expo prebuild
@@ -269,12 +253,7 @@ jobs:
               'zod': '^3.25.76',
               '@types/react': '^19.2.0',
               '@types/react-dom': '^19.2.0',
-              '@types/node': '^25.3.3',
-              '@replit/vite-plugin-cartographer': '^0.5.1',
-              'framer-motion': '^12.23.24',
-              'lucide-react': '^0.545.0',
-              'vite': '^7.3.2',
-              'wouter': '^3.3.5'
+              '@types/node': '^25.3.3'
             };
             ['dependencies','devDependencies','peerDependencies'].forEach(section => {
               if (!pkg[section]) return;
@@ -398,8 +377,10 @@ jobs:
           echo " Build Complete"
           echo "=============================="
           echo "App:     ${{ inputs.app_name }}"
-          echo "Package: ${{ inputs.package_name }}"
+          echo "Package: ${PACKAGE_NAME:-<project default>}"
           echo "Mode:    ${{ inputs.build_mode }}"
           echo "Job ID:  ${{ inputs.job_id }}"
           echo "=============================="
           ls -lh output/*.apk 2>/dev/null || echo "No APK found"
+        env:
+          PACKAGE_NAME: ${{ inputs.package_name }}
