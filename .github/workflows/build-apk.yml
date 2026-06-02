@@ -109,6 +109,8 @@ jobs:
           cd project
 
           FORCED_TYPE="${{ inputs.project_type }}"
+          # Normalize hyphens to underscores for consistency (native-android → native_android)
+          FORCED_TYPE=$(echo "$FORCED_TYPE" | tr '-' '_')
           if [ "$FORCED_TYPE" != "auto" ] && [ -n "$FORCED_TYPE" ]; then
             echo "PROJECT_TYPE=$FORCED_TYPE" >> $GITHUB_ENV
             echo "Forced project type: $FORCED_TYPE"
