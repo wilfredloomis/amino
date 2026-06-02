@@ -17,7 +17,7 @@ on:
         required: true
       package_name:
         description: "Android package name (e.g. com.example.myapp)"
-        required: true
+        required: false
       flutter_version:
         description: "Flutter version to use"
         required: false
@@ -44,11 +44,13 @@ jobs:
           echo "=============================="
           echo "Job ID:       ${{ inputs.job_id }}"
           echo "App name:     ${{ inputs.app_name }}"
-          echo "Package:      ${{ inputs.package_name }}"
+          echo "Package:      ${PACKAGE_NAME:-<project default>}"
           echo "Build mode:   ${{ inputs.build_mode }}"
           echo "Project type: ${{ inputs.project_type }}"
           echo "Flutter ver:  ${{ inputs.flutter_version }}"
           echo "=============================="
+        env:
+          PACKAGE_NAME: ${{ inputs.package_name }}
 
       - name: Install system dependencies
         run: |
@@ -180,28 +182,32 @@ jobs:
           restore-keys: |
             npm-${{ runner.os }}-
 
-      - name: Patch package name and app name
+      - name: Patch app name
         run: |
           cd project
-          TARGET_PACKAGE="${{ inputs.package_name }}"
           TARGET_APP="${{ inputs.app_name }}"
 
-          echo "Target package: $TARGET_PACKAGE"
           echo "Target app name: $TARGET_APP"
-
-          # Patch AndroidManifest.xml package attribute
-          if [ -f android/app/src/main/AndroidManifest.xml ]; then
-            CURRENT=$(grep -oP 'package="\K[^"]+' android/app/src/main/AndroidManifest.xml | head -1 || echo "")
-            if [ -n "$CURRENT" ] && [ "$CURRENT" != "$TARGET_PACKAGE" ]; then
-              sed -i "s|package=\"$CURRENT\"|package=\"$TARGET_PACKAGE\"|g" android/app/src/main/AndroidManifest.xml
-              echo "Patched package: $CURRENT → $TARGET_PACKAGE"
-            fi
-          fi
 
           # Patch app label in AndroidManifest
           if [ -f android/app/src/main/AndroidManifest.xml ]; then
             sed -i "s|android:label=\"[^\"]*\"|android:label=\"$TARGET_APP\"|g" android/app/src/main/AndroidManifest.xml
             echo "Patched app label: $TARGET_APP"
+          fi
+
+      - name: Patch package name
+        if: ${{ inputs.package_name != '' }}
+        run: |
+          cd project
+          TARGET_PACKAGE="${{ inputs.package_name }}"
+          echo "Target package: $TARGET_PACKAGE"
+
+          if [ -f android/app/src/main/AndroidManifest.xml ]; then
+            CURRENT=$(grep -oP 'package="\K[^"]+' android/app/src/main/AndroidManifest.xml | head -1 || echo "")
+            if [ -n "$CURRENT" ] && [ "$CURRENT" != "$TARGET_PACKAGE" ]; then
+              sed -i "s|package=\"$CURRENT\"|package=\"$TARGET_PACKAGE\"|g" android/app/src/main/AndroidManifest.xml
+              echo "Patched package: $CURRENT -> $TARGET_PACKAGE"
+            fi
           fi
 
       - name: Set up signing keystore
@@ -370,8 +376,10 @@ jobs:
           echo " Build Complete"
           echo "=============================="
           echo "App:     ${{ inputs.app_name }}"
-          echo "Package: ${{ inputs.package_name }}"
+          echo "Package: ${PACKAGE_NAME:-<project default>}"
           echo "Mode:    ${{ inputs.build_mode }}"
           echo "Job ID:  ${{ inputs.job_id }}"
           echo "=============================="
           ls -lh output/*.apk 2>/dev/null || echo "No APK found"
+        env:
+          PACKAGE_NAME: ${{ inputs.package_name }}
