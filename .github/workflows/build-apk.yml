@@ -1,4 +1,5 @@
 name: Cloud APK Build
+run-name: Build ${{ inputs.job_id }} - ${{ inputs.app_name }}
 
 on:
   workflow_dispatch:
