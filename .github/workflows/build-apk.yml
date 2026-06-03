@@ -28,7 +28,7 @@ on:
         required: false
         default: "release"
       project_type:
-        description: "Project type: auto, flutter, react_native, expo, native_android"
+        description: "Project type: auto, flutter, react_native, expo, native_android, capacitor, cordova, ionic"
         required: false
         default: "auto"
 
@@ -66,8 +66,22 @@ jobs:
 
       - name: Download source code
         run: |
-          echo "Downloading source from: ${{ inputs.source_url }}"
-          curl -fL "${{ inputs.source_url }}" -o source.zip --retry 3 --retry-delay 2
+          if [ -n "${{ inputs.asset_id }}" ]; then
+            echo "Downloading from GitHub release asset with auth..."
+            curl -L -f \
+              -H "Authorization: token ${{ secrets.GH_PAT }}" \
+              -H "Accept: application/octet-stream" \
+              "https://api.github.com/repos/${{ github.repository }}/releases/assets/${{ inputs.asset_id }}" \
+              -o source.zip \
+              --retry 3 \
+              --retry-delay 2
+          elif [ -n "${{ inputs.source_url }}" ]; then
+            echo "Downloading source from: ${{ inputs.source_url }}"
+            curl -fL "${{ inputs.source_url }}" -o source.zip --retry 3 --retry-delay 2
+          else
+            echo "ERROR: No source_url or asset_id provided"
+            exit 1
+          fi
 
       - name: Clean up staging files
         run: |
@@ -77,14 +91,14 @@ jobs:
       - name: Extract source code
         run: |
           unzip -q source.zip -d project_tmp
-          # Handle nested directory from ZIP
-          TOP=$(ls project_tmp | head -1)
-          if [ -d "project_tmp/$TOP" ] && [ "$(ls project_tmp | wc -l)" -eq 1 ]; then
-            mv "project_tmp/$TOP"/* project/ 2>/dev/null || mv "project_tmp/$TOP"/.[!.]* project/ 2>/dev/null || true
-            mv "project_tmp/$TOP" project/ 2>/dev/null || true
-            rsync -a "project_tmp/$TOP/" project/ 2>/dev/null || true
+          DIRS=$(find project_tmp -mindepth 1 -maxdepth 1 -type d)
+          DIR_COUNT=$(echo "$DIRS" | wc -l)
+          FILES_AT_ROOT=$(find project_tmp -mindepth 1 -maxdepth 1 -type f | wc -l)
+          if [ "$DIR_COUNT" -eq 1 ] && [ "$FILES_AT_ROOT" -eq 0 ]; then
+            INNER_DIR=$(echo "$DIRS" | head -1)
+            cp -a "$INNER_DIR"/. project/
           else
-            mv project_tmp/* project/ 2>/dev/null || true
+            cp -a project_tmp/. project/
           fi
           rm -rf project_tmp source.zip
           echo "Project contents:"
@@ -125,6 +139,15 @@ jobs:
             if grep -q '"expo"' package.json 2>/dev/null; then
               echo "PROJECT_TYPE=expo" >> $GITHUB_ENV
               echo "Detected: Expo"
+            elif grep -q '"@capacitor/\(core\|android\)"' package.json 2>/dev/null; then
+              echo "PROJECT_TYPE=capacitor" >> $GITHUB_ENV
+              echo "Detected: Capacitor"
+            elif grep -q '"cordova-android"' package.json 2>/dev/null; then
+              echo "PROJECT_TYPE=cordova" >> $GITHUB_ENV
+              echo "Detected: Cordova"
+            elif [ -f ionic.config.json ] || grep -q '"@ionic/' package.json 2>/dev/null; then
+              echo "PROJECT_TYPE=ionic" >> $GITHUB_ENV
+              echo "Detected: Ionic"
             elif grep -q '"react-native"' package.json 2>/dev/null; then
               echo "PROJECT_TYPE=react_native" >> $GITHUB_ENV
               echo "Detected: React Native"
@@ -148,8 +171,8 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Set up Node.js for React Native / Expo
-        if: env.PROJECT_TYPE == 'react_native' || env.PROJECT_TYPE == 'expo'
+      - name: Set up Node.js for JavaScript-based projects
+        if: env.PROJECT_TYPE == 'react_native' || env.PROJECT_TYPE == 'expo' || env.PROJECT_TYPE == 'capacitor' || env.PROJECT_TYPE == 'cordova' || env.PROJECT_TYPE == 'ionic'
         uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -175,7 +198,7 @@ jobs:
             gradle-${{ runner.os }}-
 
       - name: Cache npm packages
-        if: env.PROJECT_TYPE == 'react_native' || env.PROJECT_TYPE == 'expo'
+        if: env.PROJECT_TYPE == 'react_native' || env.PROJECT_TYPE == 'expo' || env.PROJECT_TYPE == 'capacitor' || env.PROJECT_TYPE == 'cordova' || env.PROJECT_TYPE == 'ionic'
         uses: actions/cache@v4
         with:
           path: ~/.npm
@@ -320,8 +343,46 @@ jobs:
         if: env.PROJECT_TYPE == 'native_android'
         run: |
           cd project
-          chmod +x gradlew || true
+          if [ ! -f gradlew ] && [ -f android/gradlew ]; then
+            cd android
+          fi
+          chmod +x gradlew
           ./gradlew assemble${{ inputs.build_mode == 'debug' && 'Debug' || 'Release' }} 2>&1 | tail -100
+
+      - name: Build Capacitor APK
+        if: env.PROJECT_TYPE == 'capacitor'
+        run: |
+          cd project
+          npm install
+          npm run build || true
+          npx cap sync android
+          cd android
+          chmod +x gradlew
+          ./gradlew assemble${{ inputs.build_mode == 'debug' && 'Debug' || 'Release' }} 2>&1 | tail -100
+
+      - name: Build Cordova APK
+        if: env.PROJECT_TYPE == 'cordova'
+        run: |
+          cd project
+          npm install
+          npx cordova platform add android || true
+          npx cordova build android --${{ inputs.build_mode == 'debug' && 'debug' || 'release' }} 2>&1 | tail -100
+
+      - name: Build Ionic APK
+        if: env.PROJECT_TYPE == 'ionic'
+        run: |
+          cd project
+          npm install
+          npm run build
+          if [ -f capacitor.config.ts ] || [ -f capacitor.config.js ] || [ -f capacitor.config.json ]; then
+            npx cap sync android
+            cd android
+            chmod +x gradlew
+            ./gradlew assemble${{ inputs.build_mode == 'debug' && 'Debug' || 'Release' }} 2>&1 | tail -100
+          else
+            npx cordova platform add android || true
+            npx cordova build android --${{ inputs.build_mode == 'debug' && 'debug' || 'release' }} 2>&1 | tail -100
+          fi
 
       - name: Sign APK
         if: env.KEYSTORE_PATH != ''
