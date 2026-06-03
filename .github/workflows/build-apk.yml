@@ -46,6 +46,7 @@ jobs:
           echo "=============================="
           echo " Cloud APK Build Engine"
           echo "=============================="
+          echo "Started at:   $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
           echo "Job ID:       ${{ inputs.job_id }}"
           echo "App name:     ${{ inputs.app_name }}"
           echo "Package:      ${PACKAGE_NAME:-<project default>}"
@@ -242,7 +243,7 @@ jobs:
       - name: Set up signing keystore
         run: |
           if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
-            echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > /tmp/release.keystore
+            printf '%s' "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > /tmp/release.keystore
             echo "KEYSTORE_PATH=/tmp/release.keystore" >> $GITHUB_ENV
             echo "Keystore loaded"
           else
@@ -265,6 +266,7 @@ jobs:
             sed -E -i 's/targetSdkVersion[[:space:]]+[0-9]+[[:space:]]*=[[:space:]]*[0-9]+/targetSdkVersion = 35/g' "$f" 2>/dev/null || true
             sed -E -i 's/compileSdkVersion[[:space:]]*=[[:space:]]*[0-9]+/compileSdkVersion = 35/g' "$f" 2>/dev/null || true
             sed -E -i 's/targetSdkVersion[[:space:]]*=[[:space:]]*[0-9]+/targetSdkVersion = 35/g' "$f" 2>/dev/null || true
+            sed -E -i '/ext[[:space:]]*\{/,/\}/s/^([[:space:]]*)(compileSdkVersion|targetSdkVersion)[[:space:]]+([0-9]+)[[:space:]]*$/\1\2 = \3/' "$f" 2>/dev/null || true
             echo "Patched SDK version in $f"
           done || true
 
@@ -397,19 +399,32 @@ jobs:
           fi
 
       - name: Sign APK
-        if: env.KEYSTORE_PATH != ''
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          APK_FILE=$(find project -name "*.apk" -type f | grep -v "unsigned" | head -n 1)
-          if [ -n "$APK_FILE" ] && [ -n "${{ secrets.KEYSTORE_PASSWORD }}" ]; then
+          if [ -z "${KEYSTORE_PATH:-}" ] || [ -z "$KEYSTORE_PASSWORD" ] || [ -z "$KEY_ALIAS" ]; then
+            echo "Skipping signing (missing keystore, keystore password, or key alias)"
+            exit 0
+          fi
+
+          APK_FILE=$(find project -name "*.apk" -type f | head -n 1)
+          if [ -n "$APK_FILE" ]; then
+            mkdir -p project/signed-output
+            SIGNED_APK="project/signed-output/app-signed.apk"
+            cp "$APK_FILE" "$SIGNED_APK"
+            EFFECTIVE_KEY_PASSWORD="${KEY_PASSWORD:-$KEYSTORE_PASSWORD}"
             $ANDROID_HOME/build-tools/35.0.0/apksigner sign \
               --ks "$KEYSTORE_PATH" \
-              --ks-pass "pass:${{ secrets.KEYSTORE_PASSWORD }}" \
-              --key-pass "pass:${{ secrets.KEY_PASSWORD }}" \
-              --ks-key-alias "${{ secrets.KEY_ALIAS }}" \
-              "$APK_FILE"
-            echo "APK signed: $APK_FILE"
+              --ks-pass "pass:$KEYSTORE_PASSWORD" \
+              --key-pass "pass:$EFFECTIVE_KEY_PASSWORD" \
+              --ks-key-alias "$KEY_ALIAS" \
+              "$SIGNED_APK"
+            $ANDROID_HOME/build-tools/35.0.0/apksigner verify --verbose "$SIGNED_APK"
+            echo "APK signed: $SIGNED_APK"
           else
-            echo "Skipping signing (no keystore or keystore password)"
+            echo "Skipping signing (no APK found)"
           fi
 
       - name: Prepare APK artifact
@@ -419,7 +434,11 @@ jobs:
           echo "Searching for APK files..."
           find project -name "*.apk" -type f | head -20
 
-          APK_FILE=$(find project -name "*.apk" -type f | grep -v "unsigned" | head -n 1)
+          APK_FILE=$(find project/signed-output -name "*.apk" -type f 2>/dev/null | head -n 1)
+
+          if [ -z "$APK_FILE" ]; then
+            APK_FILE=$(find project -name "*.apk" -type f | grep -v "unsigned" | head -n 1)
+          fi
 
           if [ -z "$APK_FILE" ]; then
             APK_FILE=$(find project -name "*.apk" -type f | head -n 1)
@@ -449,6 +468,7 @@ jobs:
           echo "=============================="
           echo " Build Complete"
           echo "=============================="
+          echo "Finished: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
           echo "App:     ${{ inputs.app_name }}"
           echo "Package: ${PACKAGE_NAME:-<project default>}"
           echo "Mode:    ${{ inputs.build_mode }}"
