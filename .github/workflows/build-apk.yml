@@ -259,12 +259,21 @@ jobs:
             chmod +x gradlew
           fi
 
-          # Fix compileSdkVersion if too old
-          find . -name "build.gradle" -o -name "build.gradle.kts" | xargs grep -l "compileSdkVersion" 2>/dev/null | while read f; do
-            sed -i 's/compileSdkVersion [0-9]*/compileSdkVersion 35/g' "$f" 2>/dev/null || true
-            sed -i 's/targetSdkVersion [0-9]*/targetSdkVersion 35/g' "$f" 2>/dev/null || true
+          # Fix common Groovy Gradle SDK forms without corrupting "compileSdkVersion = 33".
+          find . -name "build.gradle" -type f -print0 | xargs -0 -r grep -lE "SdkVersion|compileSdk|targetSdk" 2>/dev/null | while read f; do
+            sed -E -i 's/compileSdkVersion[[:space:]]+[0-9]+[[:space:]]*=[[:space:]]*[0-9]+/compileSdkVersion 35/g' "$f" 2>/dev/null || true
+            sed -E -i 's/targetSdkVersion[[:space:]]+[0-9]+[[:space:]]*=[[:space:]]*[0-9]+/targetSdkVersion 35/g' "$f" 2>/dev/null || true
+            sed -E -i 's/compileSdkVersion[[:space:]]*=[[:space:]]*[0-9]+/compileSdkVersion 35/g' "$f" 2>/dev/null || true
+            sed -E -i 's/targetSdkVersion[[:space:]]*=[[:space:]]*[0-9]+/targetSdkVersion 35/g' "$f" 2>/dev/null || true
+            sed -E -i 's/compileSdkVersion[[:space:]]+[0-9]+/compileSdkVersion 35/g' "$f" 2>/dev/null || true
+            sed -E -i 's/targetSdkVersion[[:space:]]+[0-9]+/targetSdkVersion 35/g' "$f" 2>/dev/null || true
             echo "Patched SDK version in $f"
           done || true
+
+          if [ -f build.gradle ]; then
+            echo "Root build.gradle after auto-fix:"
+            nl -ba build.gradle | sed -n '1,80p'
+          fi
 
       - name: Expo prebuild
         if: env.PROJECT_TYPE == 'expo'
