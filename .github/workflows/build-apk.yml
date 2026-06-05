@@ -212,6 +212,7 @@ jobs:
         with:
           cmdline-tools-version: latest
           accept-android-sdk-licenses: true
+          log-accepted-android-sdk-licenses: false
           packages: >
             platform-tools
             platforms;android-35
@@ -224,10 +225,10 @@ jobs:
             COMPILE_SDK=$(grep -E "compileSdk(Version)?[[:space:]]*(=|[[:space:]])[[:space:]]*[0-9]+" "$BUILD_FILE" | grep -oE '[0-9]+' | head -1 || true)
             NDK_VER=$(grep -E "ndkVersion[[:space:]]*(=|[[:space:]])" "$BUILD_FILE" | grep -oE '[0-9]+(\.[0-9]+){2,}' | head -1 || true)
             if [ -n "$COMPILE_SDK" ]; then
-              sdkmanager "platforms;android-$COMPILE_SDK" "build-tools;35.0.0" || true
+              yes | sdkmanager "platforms;android-$COMPILE_SDK" "build-tools;35.0.0" || true
             fi
             if [ -n "$NDK_VER" ]; then
-              sdkmanager "ndk;$NDK_VER" || true
+              yes | sdkmanager "ndk;$NDK_VER" || true
             fi
           fi
           yes | sdkmanager --licenses >/dev/null 2>&1 || true
@@ -261,6 +262,12 @@ jobs:
             done
             find . -name AndroidManifest.xml -not -path "*/build/*" -not -path "*/node_modules/*" | while read -r MANIFEST; do
               sed -i "s|android:label=\"[^\"]*\"|android:label=\"$APP_NAME\"|g" "$MANIFEST" || true
+              if grep -q 'android:label=' "$MANIFEST"; then
+                grep -q 'xmlns:tools=' "$MANIFEST" || sed -i 's|<manifest |<manifest xmlns:tools="http://schemas.android.com/tools" |' "$MANIFEST" || true
+                if grep -q '<application' "$MANIFEST" && ! grep -q 'tools:replace=.*android:label' "$MANIFEST"; then
+                  sed -i '0,/<application/s|<application|<application tools:replace="android:label"|' "$MANIFEST" || true
+                fi
+              fi
             done
           fi
 
@@ -346,12 +353,77 @@ jobs:
         working-directory: project
         run: |
           set -eo pipefail
+
+          echo "Patching legacy Gradle dependency keywords..."
+          find . \( -name build.gradle -o -name build.gradle.kts \) -not -path "*/build/*" -not -path "*/node_modules/*" \
+            -exec sed -i -E \
+              -e 's/\btestCompile\b/testImplementation/g' \
+              -e 's/\bandroidTestCompile\b/androidTestImplementation/g' \
+              -e 's/\bcompile\b/implementation/g' \
+              -e 's/\bprovided\b/compileOnly/g' \
+              -e 's/\bapt\b/annotationProcessor/g' \
+            {} \; 2>/dev/null || true
+
           GRADLEW=$(find . -name gradlew -not -path "*/node_modules/*" | head -1)
           if [ -z "$GRADLEW" ]; then
             echo "ERROR: No Gradle wrapper found"
             exit 1
           fi
-          cd "$(dirname "$GRADLEW")"
+          GRADLE_DIR=$(dirname "$GRADLEW")
+          echo "Found gradlew at: $GRADLEW"
+
+          PROPS="$GRADLE_DIR/gradle.properties"
+          touch "$PROPS"
+          sed -i '/org\.gradle\.java\.home\s*=/d' "$PROPS" 2>/dev/null || true
+          sed -i '/android\.aapt2FromMavenOverride\s*=/d' "$PROPS" 2>/dev/null || true
+          sed -i '/android\.injected\.logSender\.enable\s*=/d' "$PROPS" 2>/dev/null || true
+          sed -i '/com\.itsaky\.androidide/d' "$PROPS" 2>/dev/null || true
+          sed -i '/\/data\/\(user\|data\)\/[0-9]/d' "$PROPS" 2>/dev/null || true
+          for KEY_VAL in \
+            "org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -XX:+HeapDumpOnOutOfMemoryError" \
+            "org.gradle.daemon=false" \
+            "org.gradle.caching=true" \
+            "android.useAndroidX=true" \
+            "android.enableJetifier=true"; do
+            KEY="${KEY_VAL%%=*}"
+            grep -q "^${KEY}=" "$PROPS" 2>/dev/null || echo "$KEY_VAL" >> "$PROPS"
+          done
+
+          WRAPPER_JAR="$GRADLE_DIR/gradle/wrapper/gradle-wrapper.jar"
+          if [ ! -f "$WRAPPER_JAR" ]; then
+            echo "gradle-wrapper.jar missing; downloading wrapper jar"
+            mkdir -p "$GRADLE_DIR/gradle/wrapper"
+            curl -fsSL -o "$WRAPPER_JAR" \
+              https://github.com/gradle/gradle/raw/v8.5.0/gradle/wrapper/gradle-wrapper.jar || true
+          fi
+
+          WRAPPER_PROPS="$GRADLE_DIR/gradle/wrapper/gradle-wrapper.properties"
+          if [ -f "$WRAPPER_PROPS" ]; then
+            sed -i 's|http://services.gradle.org|https://services.gradle.org|g' "$WRAPPER_PROPS"
+            GRAD_VER=$(grep -oP 'gradle-\K[0-9.]+(?=-(bin|all)\.zip)' "$WRAPPER_PROPS" | head -1 || true)
+            MAJOR=$(echo "$GRAD_VER" | cut -d. -f1)
+            MINOR=$(echo "$GRAD_VER" | cut -d. -f2)
+            if [ -n "$MAJOR" ] && { [ "$MAJOR" -lt 7 ] || { [ "$MAJOR" -eq 7 ] && [ "${MINOR:-0}" -lt 3 ]; }; }; then
+              echo "Upgrading old Gradle wrapper $GRAD_VER to 7.6.4"
+              sed -i 's|distributionUrl=.*|distributionUrl=https\://services.gradle.org/distributions/gradle-7.6.4-bin.zip|' "$WRAPPER_PROPS"
+            fi
+          fi
+
+          APP_GRADLE="$GRADLE_DIR/app/build.gradle"
+          if [ -f "$APP_GRADLE" ] && ! grep -q "pickFirst" "$APP_GRADLE"; then
+            if grep -q "packagingOptions" "$APP_GRADLE"; then
+              sed -i "s/packagingOptions[[:space:]]*{/packagingOptions {\n        pickFirst 'lib\/\*\*\/*.so'/" "$APP_GRADLE" || true
+            else
+              sed -i "s/android[[:space:]]*{/android {\n    packagingOptions {\n        pickFirst 'lib\/\*\*\/*.so'\n    }/" "$APP_GRADLE" || true
+            fi
+          fi
+
+          if [ -f /tmp/key.properties ]; then
+            cp /tmp/key.properties "$GRADLE_DIR/key.properties" 2>/dev/null || true
+            cp /tmp/key.properties "$GRADLE_DIR/../key.properties" 2>/dev/null || true
+          fi
+
+          cd "$GRADLE_DIR"
           ./gradlew assemble$(echo "$BUILD_MODE" | sed 's/.*/\u&/') --no-daemon --stacktrace
 
       - name: Build Capacitor APK
@@ -402,11 +474,9 @@ jobs:
           while IFS= read -r REPORT; do
             FOUND=1
             echo "----- $REPORT -----"
-            if grep -nE "ERROR|Merging Errors|uses-sdk|Attribute|Suggestion|tools:replace|android:exported" "$REPORT"; then
-              true
-            else
-              sed -n '1,240p' "$REPORT"
-            fi
+            sed -n '1,260p' "$REPORT"
+            echo "----- matching diagnostics -----"
+            grep -nE "Error:|ERROR|Merging Errors|uses-sdk|Attribute|Suggestion|tools:replace|android:exported" "$REPORT" || true
           done < <(find project -path "*/build/outputs/logs/manifest-merger-*-report.txt" -type f -print)
           if [ "$FOUND" -eq 0 ]; then
             echo "No manifest merger report files found."
