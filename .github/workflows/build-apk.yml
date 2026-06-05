@@ -390,6 +390,50 @@ jobs:
             npx cordova build android --$BUILD_MODE
           fi
 
+      - name: Show Android failure diagnostics
+        if: failure()
+        run: |
+          echo "=============================="
+          echo " Android Build Diagnostics"
+          echo "=============================="
+
+          echo "Manifest merger reports:"
+          FOUND=0
+          while IFS= read -r REPORT; do
+            FOUND=1
+            echo "----- $REPORT -----"
+            if grep -nE "ERROR|Merging Errors|uses-sdk|Attribute|Suggestion|tools:replace|android:exported" "$REPORT"; then
+              true
+            else
+              sed -n '1,240p' "$REPORT"
+            fi
+          done < <(find project -path "*/build/outputs/logs/manifest-merger-*-report.txt" -type f -print)
+          if [ "$FOUND" -eq 0 ]; then
+            echo "No manifest merger report files found."
+          fi
+
+          echo "Manifest merger blame files:"
+          FOUND=0
+          while IFS= read -r REPORT; do
+            FOUND=1
+            echo "----- $REPORT -----"
+            sed -n '1,260p' "$REPORT"
+          done < <(find project -path "*/build/intermediates/manifest_merge_blame_file/*/*" -type f -print)
+          if [ "$FOUND" -eq 0 ]; then
+            echo "No manifest merger blame files found."
+          fi
+
+          echo "Gradle problem reports:"
+          FOUND=0
+          while IFS= read -r REPORT; do
+            FOUND=1
+            echo "----- $REPORT -----"
+            grep -nE "error|failure|manifest|deprecated|exception" "$REPORT" | head -80 || true
+          done < <(find project -path "*/build/reports/problems/problems-report.html" -type f -print)
+          if [ "$FOUND" -eq 0 ]; then
+            echo "No Gradle problem report files found."
+          fi
+
       - name: Sign APK
         if: env.KEYSTORE_PASSWORD_SET == 'yes'
         run: |
