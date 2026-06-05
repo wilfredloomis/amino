@@ -164,6 +164,8 @@ jobs:
             TYPE="$FORCED_TYPE"
           elif [ -f pubspec.yaml ]; then
             TYPE="flutter"
+          elif [ -f settings.gradle ] || [ -f settings.gradle.kts ] || [ -f build.gradle ] || [ -f build.gradle.kts ] || [ -f gradlew ]; then
+            TYPE="native_android"
           elif [ -f package.json ] && grep -q '"expo"' package.json 2>/dev/null; then
             TYPE="expo"
           elif [ -f package.json ] && grep -q '"@capacitor/\(core\|android\)"' package.json 2>/dev/null; then
@@ -172,10 +174,11 @@ jobs:
             TYPE="cordova"
           elif [ -f package.json ] && { [ -f ionic.config.json ] || grep -q '"@ionic/' package.json 2>/dev/null; }; then
             TYPE="ionic"
-          elif [ -f package.json ]; then
+          elif [ -f package.json ] && [ -d android ]; then
             TYPE="react_native"
-          elif [ -f settings.gradle ] || [ -f settings.gradle.kts ] || [ -f build.gradle ] || [ -f build.gradle.kts ] || [ -f gradlew ]; then
-            TYPE="native_android"
+          elif [ -f package.json ]; then
+            echo "ERROR: package.json found, but no Android/Gradle project markers were found"
+            exit 1
           else
             MARKER=$(find . -maxdepth 4 \( -name pubspec.yaml -o -name package.json -o -name gradlew \) -not -path "*/node_modules/*" | head -1)
             case "$MARKER" in
